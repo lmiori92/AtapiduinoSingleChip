@@ -38,6 +38,10 @@ Schematic and pinout sheets are available in the doc folder.
 
 I have not found any github repository containing atapiduino. So, one of the first commits involves copying the original code so that changes can be tracked directly with git.
 
+# Configuration Management
+
+Currently, the project is inside a single ".ino" file. This will change at some point since I prefer using gcc without the arduino library.
+
 # License
 
 The original atapiduino is distributed with the GPLv3 license, hence this project is also licensed under the terms of the GPLv3 license.
