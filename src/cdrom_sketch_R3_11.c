@@ -3,9 +3,13 @@
     Simple IDE ATAPI controller using the Arduino I2C interface and 
     3 PCF8574 I/O expanders. Release 3.1 (adapted for Arduino 1.0)
     using a 4th PCF8574 I/O expander interfacing to a 1602 LCD.
-	
+
     Copyright (C) 2012  Carlos Durandal
-	
+    Copyright (C) 2019  Lorenzo Miori:
+        - removed arduino library dependecy (standard C libraries + custom modules)
+        - removed PCF8574 hardware (Single Chip solution, atmega328p only)
+        - implemented pt6311 led-segment driver chip driver
+
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
     the Free Software Foundation, either version 3 of the License, or
@@ -19,97 +23,75 @@
     You should have received a copy of the GNU General Public License
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-	
+
  ##########################################################################################
  
-    PCF8574   A2,A1,A0     Addr.
-        #1     0  0  0     0x20    interfaces to IDE DD0-DD7
-        #2     0  0  1     0x21    interfaces to IDE DD8-DD15
-        #3     0  1  0     0x22    interfaces to the IDE register selection see details below.
-        #4     1  1  1     0x27    interfaces to the LCD
-
-    PCF8574#3 bit:    7     6    5    4    3   2   1   0
-    IDE pin:        nDIOR nDIOW nRST nCS1 nCS0 DA2 DA1 DA0
- 
-     pin names with leading 'n' are active LOW
+    See documentation for schematics and pinout.
+    The modified program runs on a single atmega328(p) without requiring the external
+    crystal nor the 3x i2c extenders.
+    For the extra missing Digital Output (nDIOw), AREF has been exploited plus an external
+    buffer transistor since AREF can only source current.
 
  ##########################################################################################
 */
 
-#include <Wire.h>                  // I2C bus library
+/* Standard includes */
 
-// This sketch uses F Malpartida's NewLiquidCrystal library. Obtain from:
-// https://bitbucket.org/fmalpartida/new-liquidcrystal 
-#include <LiquidCrystal_I2C.h>     // I2C LCD library
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
 
-// Start of Definitions
-// ####################
+/* AVR includes */
+#include <avr/io.h>
+#include <util/delay.h>
 
-// I/O expander addresses:
-const int DataL = 0x20;            // IDE DD0-DD7
-const int DataH = 0x21;            // IDE DD8-DD15
-const int RegSel = 0x22;           // IDE register
-const int LCD_I2C_ADDR = 0x27;     // LCD (SainSmart 1602)
-
-/* Note that the 'pins' in the following LCD definitions are not IC pins numbers
-but rather specify the PCF8574 I/O port numbers: P0 to P7. E.g. LCD 'En' pin is 
-connected to port P2 of PCF8574 so En_pin = 2. */
-
-const byte BACKLIGHT_PIN = 3;
-const byte En_pin = 2;
-const byte Rw_pin = 1;
-const byte Rs_pin = 0;
-const byte D4_pin = 4;
-const byte D5_pin = 5;
-const byte D6_pin = 6;
-const byte D7_pin = 7;
-
-LiquidCrystal_I2C lcd(LCD_I2C_ADDR,En_pin,Rw_pin,Rs_pin,D4_pin,D5_pin,D6_pin,D7_pin);
+/* Dependencies */
+#include "keypad/keypad.h"
 
 // IDE Register addresses
-const byte DataReg = 0xF0;         // Addr. Data register of IDE device.
-const byte ErrFReg = 0xF1;         // Addr. Error/Feature (rd/wr) register of IDE device.
-const byte SecCReg = 0xF2;         // Addr. Sector Count register of IDE device.
-const byte SecNReg = 0xF3;         // Addr. Sector Number register of IDE device.
-const byte CylLReg = 0xF4;         // Addr. Cylinder Low register of IDE device.
-const byte CylHReg = 0xF5;         // Addr. Cylinder High register of IDE device.
-const byte HeadReg = 0xF6;         // Addr. Device/Head register of IDE device.
-const byte ComSReg = 0xF7;         // Addr. Command/Status (wr/rd) register of IDE device.
-const byte AStCReg = 0xEE;         // Addr. Alternate Status/Device Control (rd/wr) register of IDE device.
+const uint8_t DataReg = 0xF0;         // Addr. Data register of IDE device.
+const uint8_t ErrFReg = 0xF1;         // Addr. Error/Feature (rd/wr) register of IDE device.
+const uint8_t SecCReg = 0xF2;         // Addr. Sector Count register of IDE device.
+const uint8_t SecNReg = 0xF3;         // Addr. Sector Number register of IDE device.
+const uint8_t CylLReg = 0xF4;         // Addr. Cylinder Low register of IDE device.
+const uint8_t CylHReg = 0xF5;         // Addr. Cylinder High register of IDE device.
+const uint8_t HeadReg = 0xF6;         // Addr. Device/Head register of IDE device.
+const uint8_t ComSReg = 0xF7;         // Addr. Command/Status (wr/rd) register of IDE device.
+const uint8_t AStCReg = 0xEE;         // Addr. Alternate Status/Device Control (rd/wr) register of IDE device.
 
 // Program Variables
-byte dataLval;                     // dataLval and dataHval hold data from/to 
-byte dataHval;                     // D0-D15 of IDE
-byte regval;                       // regval holds addr. of reg. to be addressed on IDE
-byte reg;                          // Holds the addr. of the IDE register with adapted
+uint8_t dataLval;                     // dataLval and dataHval hold data from/to
+uint8_t dataHval;                     // D0-D15 of IDE
+uint8_t regval;                       // regval holds addr. of reg. to be addressed on IDE
+uint8_t reg;                          // Holds the addr. of the IDE register with adapted
                                    // nDIOR/nDIOW/nRST values to suit purpose.
-byte cnt;                          // packet byte counter
-byte idx;                          // index used as pointer within packet array
-byte paclen = 12;                  // Default packet length
-byte s_trck;                       // Holds start track
-byte e_trck;                       // Holds end track
-byte c_trck;                       // Follows current track while reading TOC
-byte c_trck_m;                     // MSF values for current track
-byte c_trck_s;
-byte c_trck_f;
-byte a_trck = 1;                   // Holds actual track from reading subchannel data
-byte MFS_M;                        // Holds actual M value from reading subchannel data
-byte MFS_S;                        // Holds actual S value from reading subchannel data
-byte d_trck;                       // Destination track
-byte d_trck_m;                     // MSF values for destination track
-byte d_trck_s;
-byte d_trck_f;
-byte aud_stat = 0xFF;              // subchannel data: 0x11=play, 0x12=pause, 0x15=stop 
-byte asc;
+uint8_t cnt;                          // packet uint8_t counter
+uint8_t idx;                          // index used as pointer within packet array
+uint8_t paclen = 12;                  // Default packet length
+uint8_t s_trck;                       // Holds start track
+uint8_t e_trck;                       // Holds end track
+uint8_t c_trck;                       // Follows current track while reading TOC
+uint8_t c_trck_m;                     // MSF values for current track
+uint8_t c_trck_s;
+uint8_t c_trck_f;
+uint8_t a_trck = 1;                   // Holds actual track from reading subchannel data
+uint8_t MFS_M;                        // Holds actual M value from reading subchannel data
+uint8_t MFS_S;                        // Holds actual S value from reading subchannel data
+uint8_t d_trck;                       // Destination track
+uint8_t d_trck_m;                     // MSF values for destination track
+uint8_t d_trck_s;
+uint8_t d_trck_f;
+uint8_t aud_stat = 0xFF;              // subchannel data: 0x11=play, 0x12=pause, 0x15=stop
+uint8_t asc;
 long prev_millis=0;
 long interval=100;
-boolean toc;
+bool toc;
 
-// Array containing sets of 16 byte packets corresponding to part of the CD-ROM 
-// ATAPI function set. If the IDE device only supports packets with 12 byte length
+// Array containing sets of 16 uint8_t packets corresponding to part of the CD-ROM
+// ATAPI function set. If the IDE device only supports packets with 12 uint8_t length
 // the last 4 bytes are not sent. The great majority of tested devices use 12 byte.
 
-byte fnc[]= {
+uint8_t fnc[]= {
   0x1B,0x00,0x00,0x00,0x02,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00, // idx=0 Open tray
   0x1B,0x00,0x00,0x00,0x03,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00, // idx=16 Close tray
   0x1B,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00, // idx=32 Stop unit
@@ -124,75 +106,240 @@ byte fnc[]= {
   0x4E,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00  // idx=176 Stop disk
 };
 
-// Arduino pin assignments:
-const byte LED = 13;
-const byte NEXT = 12;                   // NEXT button
-const byte EJCT = 11;                   // EJECT button, open/close CD-ROM tray
-const byte STOP = 10;                   // STOP button
-const byte PLAY = 9;                    // PLAY button
-const byte PREV = 8;                    // PREV button
+
+uint8_t chck_disk();
 
 // End of Definitions ########################################################################
+
+
+// DISPLAY ROUTINES
+
+#define INDEX_POS    (0x1)
+#define SEVEN_SEG_A_POS   (0x2)
+#define SEVEN_SEG_B_POS   (0x4)
+#define SEVEN_SEG_F_POS   (0x8)
+#define SEVEN_SEG_G_POS   (0x10)
+#define SEVEN_SEG_C_POS   (0x20)
+#define SEVEN_SEG_E_POS   (0x40)
+#define SEVEN_SEG_D_POS   (0x80)
+
+
+#define KEY_PLAY_MASK  0x40
+#define KEY_PLAY_BYTE  0x01
+#define KEY_PLAY    KEY_PLAY_MASK, KEY_PLAY_BYTE
+
+#define KEY_STOP_MASK  0x04
+#define KEY_STOP_BYTE  0x01
+#define KEY_STOP    KEY_STOP_MASK, KEY_STOP_BYTE
+
+#define KEY_FREW_MASK  0x20
+#define KEY_FREW_BYTE  0x01
+#define KEY_FREW    KEY_FREW_MASK, KEY_FREW_BYTE
+
+#define KEY_FFWD_MASK  0x02
+#define KEY_FFWD_BYTE  0x00
+#define KEY_FFWD    KEY_FFWD_MASK, KEY_FFWD_BYTE
+
+#define KEY_EJCT_MASK  0x04
+#define KEY_EJCT_BYTE  0x00
+#define KEY_EJCT    KEY_EJCT_MASK, KEY_EJCT_BYTE
+
+#define KEY_POWR_MASK  0x02
+#define KEY_POWR_BYTE  0x01
+#define KEY_POWR    KEY_POWR_MASK, KEY_POWR_BYTE
+
+#define KEY_PRESSED(key_buf, key_mask, key_byte)  ((key_buf[key_byte] & key_mask) == key_mask)
+
+void pt6311_setup();
+void display_number(uint32_t number);
+void dbg_display_number_and_wait_btn(uint32_t number);
+
+// END OF DISPLAY ROUTINES
+
+// empty routines
+
+void serial_println()
+{
+    /* Stub that will be used later on ... */
+}
+
+long millis(void)
+{
+    /* Stud that will be replaced with timer library */
+    return 0;
+}
+
+// empty routines end
+
+/*
+ * The atmega328p fuses shall be set so that
+ * the internal 8 MHz clock is selected in order to free the
+ * PB6 and PB7 i/o pins up.
+ */
+
+#define D0_7_PORT       (PORTB)
+#define D0_7_DDR        (DDRB )
+#define D0_7_PIN        (PINB )
+
+#define D8_15_PORT      (PORTD)
+#define D8_15_DDR       (DDRD )
+#define D8_15_PIN       (PIND )
+
+#define CTRL_PORT       (PORTC)
+#define CTRL_DDR        (DDRC )
+
+#define CTRL_A0_PIN     (0)
+#define CTRL_A1_PIN     (1)
+#define CTRL_A2_PIN     (2)
+#define CTRL_nCS0_PIN   (3)
+#define CTRL_nCS1_PIN   (4)
+#define CTRL_nDIOW_PIN  (6)  // This is a virtual pin, mapped to AREF ;-)
+#define CTRL_nDIOR_PIN  (5)
+
+//#define UART_ENABLE
+
+void io_8255_set_direction(bool read_or_write)
+{
+
+    /* Disable UART */
+    //Serial.flush();
+    //UCSR0B &= ~(1 << RXEN0);
+    //UCSR0B &= ~(1 << TXEN0);
+    //_delay_us(100);
+
+    if (read_or_write == true)
+    {
+        // Initialize D0-D7 as inputs
+        // Initialize D8-D15 as inputs
+        D0_7_DDR   = 0x00U;
+        D8_15_DDR  = 0x00U;
+        /* Enable pull-ups */
+        D0_7_PORT  = 0xFFU;
+        D8_15_PORT = 0xFFU;
+    }
+    else
+    {
+        // Initialize D0-D7 as outputs
+        // Initialize D8-D15 as outputs
+        D0_7_DDR = 0xFFU;
+        D8_15_DDR = 0xFFU;
+    }
+}
+
+void ide_ctrl_port(uint8_t val)
+{
+    /* Write the value to the port (only 6 bits) */
+    CTRL_PORT = val & 0x3FU;
+    /* Write the additional virtual pin, mapped to AREF:
+     *  the transistor is inverting!
+     */
+    ADMUX = ((val >> CTRL_nDIOW_PIN) & 0x01U) ? 0x00 : 0x40;
+    _delay_us(100);
+}
+
+void ide_ctrl_init()
+{
+    // Initialize (= disable, inverting) the ADC to map the virtual pin to AREF
+    ADMUX = 0x00;
+    // Disable the TWI interface
+    TWCR = 0x00;
+    // Initialize control lines as outputs
+    CTRL_DDR  = 0xFFU;
+    // Initialize all as HIGH
+    ide_ctrl_port(0xFFU);
+    // Set all pins of all PCF8574 to high impedance inputs.
+    highZ();
+}
+
+// End of 82C55 routines
 
 void setup(){
 
   // LCD Part
   // ########
-  lcd.begin (16,2);                                // init LCD interface
+//  lcd.begin ();                                // init LCD interface
   // Switch on the backlight
-  lcd.setBacklightPin(BACKLIGHT_PIN,POSITIVE);
-  lcd.setBacklight(HIGH);
-  lcd.home ();                                     // set cursor to home position
+  //lcd.setBacklightPin(BACKLIGHT_PIN,POSITIVE);
+//  lcd.setBacklight(HIGH);
+//  lcd.home ();                                     // set cursor to home position
+
+
   
   // Arduino Part
   // #############
 
-  // start I2C interface as Master
-  Wire.begin();
+  //Serial.begin(57600);
 
-  // Set all pins of all PCF8574 to high impedance inputs.
-  highZ();
+  // Initialize the IDE control port
+  ide_ctrl_init();
 
-  // Start Serial Interface
-//  Serial.begin(9600);
+  _delay_ms(100);
+
+    pt6311_setup();
+
+//  while(1)
+//  {
+//      ide_ctrl_port(1 << 6);
+//    _delay_ms(3000);
+//          ide_ctrl_port(0);
+//    _delay_ms(3000);
+//  }
+
+  //diagnosticTest();
 
   // initialize the push button pins as inputs with pullup:
-  pinMode(NEXT, INPUT);
-  pinMode(PREV, INPUT);
-  pinMode(EJCT, INPUT);
-  pinMode(STOP, INPUT);
-  pinMode(PLAY, INPUT);
-  pinMode(LED, OUTPUT);
-
-  digitalWrite((byte)NEXT, HIGH);
-  digitalWrite((byte)PREV, HIGH);  
-  digitalWrite((byte)EJCT, HIGH);
-  digitalWrite((byte)STOP, HIGH);
-  digitalWrite((byte)PLAY, HIGH);
-  digitalWrite((byte)LED, LOW);
+//  pinMode(NEXT, INPUT);
+//  pinMode(PREV, INPUT);
+//  pinMode(EJCT, INPUT);
+//  pinMode(STOP, INPUT);
+//  pinMode(PLAY, INPUT);
+//  pinMode(LED, OUTPUT);
+//
+//  digitalWrite((byte)NEXT, HIGH);
+//  digitalWrite((byte)PREV, HIGH);
+//  digitalWrite((byte)EJCT, HIGH);
+//  digitalWrite((byte)STOP, HIGH);
+//  digitalWrite((byte)PLAY, HIGH);
+//  digitalWrite((byte)LED, LOW);
 
 // IDE Initialisation Part
 // ########################
 
-  lcd.print("Atapiduino");
-  lcd.setCursor (0,1);                      // cursor to beginning of LCD 2nd. line
-  lcd.print("Release 3.1");
+  uint8_t code1;
+  uint8_t code2;
+
+ // Serial.println("Atapiduino Single Chip");
   
+//  Serial.setCursor (0,1);                      // cursor to beginning of LCD 2nd. line
+ // Serial.println("Release 3.1");
+
   reset_IDE();                              // Do hard reset
-  delay(3000);                              // This delay waits for the drive to initialise
+  _delay_ms(3000);                              // This delay waits for the drive to initialise
+ // Serial.println("Waiting BSY");
   BSY_clear_wait();                         // The ATAPI spec. allows drives to take up to 
+ //   Serial.println("Waiting DRY");
   DRY_set_wait();                           // 31 sec. but all tested where alright within 3s.
-  lcd.clear();
+  //lcd.clear();
   readIDE(CylLReg);                         // Check device signature for ATAPI capability
-  if(dataLval == 0x14){
-    readIDE(CylHReg);
-    if(dataLval == 0xEB){
-         lcd.print("Found ATAPI Dev.");
-    }
-  }else{
-         lcd.print("No ATAPI Device!");
-         while(1);                          // No need to go ahead.
+  code1 = dataLval;
+  readIDE(CylHReg);
+  code2 = dataLval;
+
+  dbg_display_number_and_wait_btn(code1);
+  dbg_display_number_and_wait_btn(code2);
+
+  if ((code1 == 0x14) && (code2 == 0xEB))
+  {
+    // Serial.println("Found ATAPI Dev.");
   }
+  else
+  {
+   //  Serial.println(code1, HEX);
+  //   Serial.println(code2, HEX);
+  //   Serial.println("No ATAPI Device!");
+     while(1);                          // No need to go ahead.
+  }
+
   writeIDE(HeadReg, 0x00, 0xFF);            // Set Device to Master (Device 0)
   
 // Initialise task file
@@ -201,37 +348,40 @@ void setup(){
 
 // Run Self Diagnostic
 // ###################
-  delay(3000);
-  lcd.clear ();
-  lcd.print("Self Diag. ");
+  _delay_ms(3000);
+  //lcd.clear ();
+ // Serial.println("Self Diag. ");
+      readIDE(ErrFReg);
+      dbg_display_number_and_wait_btn(dataLval);
+ //   Serial.println(dataLval, HEX);
+
   writeIDE(ComSReg, 0x90, 0xFF);            // Issue Run Self Diagnostic Command
   readIDE(ErrFReg);
+  dbg_display_number_and_wait_btn(dataLval);
   if(dataLval == 0x01){
-  	lcd.print("OK");
+//    Serial.println("OK");
   }else{
-        lcd.print("Fail");            // Units failing this may still work fine
+//        Serial.println("Fail");            // Units failing this may still work fine
   }
-  delay(3000);
-  lcd.clear ();
-  lcd.print("ATAPI Device:");
-  lcd.setCursor (0,1);
+  _delay_ms(3000);
+  //lcd.clear ();
+  //Serial.println("ATAPI Device:");
+  //lcd.setCursor (0,1);
 // Identify Device
 // ###############
   writeIDE (ComSReg, 0xA1, 0xFF);           // Issue Identify Device Command
-  delay(500);                               // Instead of wait for IRQ. Needed by some dev.  
+  _delay_ms(500);                               // Instead of wait for IRQ. Needed by some dev.
 //  readIDE(AStCReg); //
   do{
     readIDE(DataReg);
     if (cnt == 0){                                // Get supported packet lenght
-      if(dataLval & (1<<0)){                      // contained in lower byte of first word
-        paclen = 16;                              // 1st bit set -> use 16 byte packets
+      if(dataLval & (1<<0)){                      // contained in lower uint8_t of first word
+        paclen = 16;                              // 1st bit set -> use 16 uint8_t packets
       }
     }
-    if(cnt > 26 & cnt < 47){                      // Read Model
-        lcd.write(dataHval);
-        lcd.write(dataLval);
-//        Serial.print(dataHval);
-//        Serial.print(dataLval);
+    if((cnt > 26) & (cnt < 47)){                      // Read Model
+      dbg_display_number_and_wait_btn(dataHval);
+      dbg_display_number_and_wait_btn(dataLval);
     }
     cnt++;
     readIDE(ComSReg);                             // Read Status Register and check DRQ,
@@ -262,36 +412,50 @@ void setup(){
 // and displays the corresponding data depending on the status and/or the commands resulting
 // from pressing the push buttons.
 
-void loop(){
+void loop(void) {
+
+  char control = ' ';
+  uint8_t btnbuf[5] = { 0 } ;
+
+    pt6311_read(0x46, btnbuf, 3);
+
+//  if (KEY_PRESSED(btnbuf, KEY_PLAY)) Serial.println("PLAY");
+
+  //if (Serial.available())
+  {
+  //  control = Serial.read(); //reads serial input
+  }
+
+
   // Scan push buttons
-  if(digitalRead(EJCT) == LOW){
-    lcd.clear();
+  if(KEY_PRESSED(btnbuf, KEY_EJCT_MASK, KEY_EJCT_BYTE)/* digitalRead(EJCT) == LOW */){
+    //lcd.clear();
     toc=false;                                    // Set toc invalid
     switch(chck_disk()) {
       case 0x00:                                  // If disk in tray case
-      lcd.print("      OPEN");
+      /*Serial.println("      OPEN");*/
       eject();
       break;
       case 0xFF:                                  // If tray closed but no disk in case
       eject();
-      lcd.print("      OPEN");
+      /*Serial.println("      OPEN");*/
       break;      
       case 0X71:                                 // If tray open -> close it
-      lcd.print("      LOAD");
+      /*Serial.println("      LOAD");*/
       load();
     }
-    lcd.clear();
+    //lcd.clear();
     a_trck = s_trck;                             // Reset to start track
   }
   
-  if(digitalRead(STOP) == LOW){
+  if(control == 's'/* digitalRead(STOP) == LOW */){
     a_trck=s_trck;                               // Reset to start track
     stop_disk();                                 // Stop Disk
     stop();                                      // Stop unit    
     toc=false;
   }
   
-  if(digitalRead(PLAY) == LOW){                  // Play has been pressed
+  if(KEY_PRESSED(btnbuf, KEY_PLAY_MASK, KEY_PLAY_BYTE)/* digitalRead(PLAY) == LOW */){                  // Play has been pressed
       switch(aud_stat){
          case 0x15:                              // If stopped
          play();                                 // start play
@@ -303,10 +467,10 @@ void loop(){
          pause();                                // pause playback
       }
     toc=false;                                   // mark TOC unknown in case disk
-    lcd.clear();                                 // is removed using device eject buton
+    //lcd.clear();                                 // is removed using device eject buton
   }                                              // while play in progress
 
-  if(digitalRead(NEXT) == LOW){
+  if(KEY_PRESSED(btnbuf, KEY_FFWD_MASK, KEY_FFWD_BYTE)/* digitalRead(NEXT) == LOW */){
     a_trck = a_trck + 1;                         // a_track becomes next track
     if(a_trck > e_trck){(a_trck = s_trck);}      // over last track? -> point to start track
     get_TOC();                                   // Get MSF for a_trck
@@ -319,10 +483,10 @@ void loop(){
      {
      pause();
     }
-    lcd.clear();
+    //lcd.clear();
   }
   
-  if(digitalRead(PREV) == LOW){                 // Basically like the NEXT function above
+  if(control == 'b'/* digitalRead(PREV) == LOW */){                 // Basically like the NEXT function above
     a_trck = a_trck - 1;                        // only backwards
     if(a_trck < s_trck){(a_trck = e_trck);}
     get_TOC();
@@ -335,19 +499,19 @@ void loop(){
      {
      pause();
     }
-    lcd.clear();    
+    //lcd.clear();
   }
   
   if(millis()-prev_millis > interval){          // This part will periodically check the
     read_subch_cmd();                           // current audio status and update the display
     if(aud_stat==0x11){                         // accordingly.
-      lcd.home();
-      lcd.print("      PLAY    ");
+      //lcd.home();
+        /*Serial.println("      PLAY    ");*/
       curr_MSF();                               // Display pickup position
     }
     if(aud_stat==0x12){
-      lcd.home();
-      lcd.print("     PAUSE   ");
+      //lcd.home();
+        /*Serial.println("     PAUSE   ");*/
       curr_MSF();
     }
     if(aud_stat==0x15 & !toc){                  // If stopped and TOC invalid
@@ -356,8 +520,8 @@ void loop(){
       toc=true;                                 // to prevent reading over and over
     }
     if(aud_stat==0x00){                         // Audio status 0 covers all other posible
-      lcd.clear();                              // states not decoded by this sketch and
-      lcd.print("    NO DISC");                 // handles them as NO DISC.
+      //lcd.clear();                              // states not decoded by this sketch and
+      /*Serial.println("    NO DISC");*/                 // handles them as NO DISC.
     }
     prev_millis=millis();
   }
@@ -368,33 +532,33 @@ void loop(){
 // #######################################
 
  void Disp_CD_data(){                          // Used to display track range and
-     lcd.clear();                              // Total playing time as recovered
-     lcd.print("Tracks  ");                    // from reading the TOC
-     lcd.print(s_trck, DEC);
-     lcd.print("-");
-     lcd.print(e_trck, DEC);
-     lcd.setCursor (0,1);
-     lcd.print("Time   ");
-     lcd.print(fnc[54], DEC);
-     lcd.print(":");
+     //lcd.clear();                              // Total playing time as recovered
+     /*Serial.println("Tracks  ");                    // from reading the TOC
+     Serial.println(s_trck, DEC);
+     Serial.println("-");
+     Serial.println(e_trck, DEC);*/
+     //lcd.setCursor (0,1);
+     /*Serial.println("Time   ");
+     Serial.println(fnc[54], DEC);
+     Serial.println(":");*/
       if(fnc[55] < 10)
       {
-        lcd.print("0");                         // Print a leading 0 for seconds when below 10
+        //Serial.println("0");                         // Print a leading 0 for seconds when below 10
       }
-      lcd.print(fnc[55], DEC);
+      //Serial.println(fnc[55], DEC);
  }
 
 void curr_MSF(){                               // During PLAY or PAUSE operation show the pickup
-      lcd.setCursor (2,1);                     // position as absolute playing time
-      lcd.print(a_trck, DEC);
-      lcd.setCursor (11,1);      
-      lcd.print(MFS_M,DEC);
-      lcd.print(":");
-      if(MFS_S < 10)
+      //lcd.setCursor (2,1);                     // position as absolute playing time
+      /*Serial.println(a_trck, DEC);*/
+      //lcd.setCursor (11,1);
+      /*Serial.println(MFS_M,DEC);
+      Serial.println(":");*/
+    /*if(MFS_S < 10)
       {
-        lcd.print("0");                         // Print a leading 0 for seconds when below 10
+        Serial.println("0");                         // Print a leading 0 for seconds when below 10
       }
-      lcd.print(MFS_S,DEC);      
+      Serial.println(MFS_S,DEC);*/
 }
 // ##################################
 // Auxiliary functions User Interface
@@ -429,64 +593,124 @@ void stop_disk(){
     SendPac();
 }
 
-// ###########################
-// Auxiliary functions PCF8475 
-// ###########################
-
 // Set to high impedance all ports of PCF8475 interfacing to IDE.
 void highZ(){
-  Wire.beginTransmission(RegSel);       // address IDE Register interface
-  Wire.write((byte)255);                       // queue FFh into buffer for setting all pins HIGH
-  Wire.endTransmission();               // transmit buffered data to IDE Register interface
-  Wire.beginTransmission(DataH);        // address IDE DD8-DD15
-  Wire.write((byte)255);                       // as above
-  Wire.endTransmission();               //
-  Wire.beginTransmission(DataL);        // address IDE DD0-DD7
-  Wire.write((byte)255);                       // as above
-  Wire.endTransmission();               //
+    /* All outputs high: deassert IDE bus */
+    ide_ctrl_port(0xFFU);
+    /* All data ports as input */
+    io_8255_set_direction(true);
+#ifdef UART_ENABLE
+    /* Enable UART */
+    UCSR0B |= (1 << RXEN0);
+    UCSR0B |= (1 << TXEN0);
+#endif
+
+    /* high-z for IDE means we can re-start display operation */
+    pt6311_init();
 }
 
 // Reset Device
 void reset_IDE(){
-  Wire.beginTransmission(RegSel);
-  Wire.write((byte)B11011111);                // Bit 5 LOW to reset IDE via nRESET
-  Wire.endTransmission();
-  delay(40);
-  Wire.beginTransmission(RegSel);
-  Wire.write((byte)B11111111);                // Release reset
-  Wire.endTransmission();
-  delay(20);
+
+  /* STUB ONLY: hard reset is only performed when hard-resetting
+   * the microcontroller. nRST is connected to PC6 (Reset).
+   */
+
+//  Wire.beginTransmission(RegSel);
+//  Wire.write((byte)B11011111);                // Bit 5 LOW to reset IDE via nRESET
+//  Wire.endTransmission();
+  _delay_ms(40);
+//  Wire.beginTransmission(RegSel);
+//  Wire.write((byte)B11111111);                // Release reset
+//  Wire.endTransmission();
+  _delay_ms(20);
 }
 
+/*
+/CS0122/CS1 A2 A1 A0  Addr.   Read Function       Write Function
+(CS1FX) (CS3FX)
+0: asserted
+1: negated
+----------------------------------------------------------------------
+  1     1    x  x  x   xxx    Data Bus High impedance with nDIOR asserted (low)
+  0     1    0  0  0   1F0    Data Register       Data Register
+  0     1    0  0  1   1F1    Error Register      (Write Precomp Reg.)
+  0     1    0  1  0   1F2    Sector Count        Sector Count
+  0     1    0  1  1   1F3    Sector Number       Sector Number
+  0     1    1  0  0   1F4    Cylinder Low        Cylinder Low
+  0     1    1  0  1   1F5    Cylinder High       Cylinder High
+  0     1    1  1  0   1F6    SDH Register        SDH Register
+  0     1    1  1  1   1F7    Status Register     Command Register
+  1     0    1  1  0   3F6    Alternate Status    Digital Output
+  1     0    1  1  1   3F7    Drive Address       Not Used
+
+
+// IDE Register addresses
+const uint8_t DataReg = 0xF0;         // Addr. Data register of IDE device.
+const uint8_t ErrFReg = 0xF1;         // Addr. Error/Feature (rd/wr) register of IDE device.
+const uint8_t SecCReg = 0xF2;         // Addr. Sector Count register of IDE device.
+const uint8_t SecNReg = 0xF3;         // Addr. Sector Number register of IDE device.
+const uint8_t CylLReg = 0xF4;         // Addr. Cylinder Low register of IDE device.
+const uint8_t CylHReg = 0xF5;         // Addr. Cylinder High register of IDE device.
+const uint8_t HeadReg = 0xF6;         // Addr. Device/Head register of IDE device.
+const uint8_t ComSReg = 0xF7;         // Addr. Command/Status (wr/rd) register of IDE device.
+const uint8_t AStCReg = 0xEE;         // Addr. Alternate Status/Device Control (rd/wr) register of IDE device.
+
+*/
+
 // Read one word from IDE register
-void readIDE (byte regval){
-  reg = regval & B01111111;             // set nDIOR bit LOW preserving register address
-  Wire.beginTransmission(RegSel);
-  Wire.write((byte)reg);
-  Wire.endTransmission();
-  Wire.requestFrom(DataH, 1);
-  dataHval = Wire.read();
-  Wire.requestFrom(DataL, 1);
-  dataLval = Wire.read();
-  highZ();                              // set all I/O pins to HIGH -> impl. nDIOR release
+void readIDE (uint8_t regval)
+{
+    reg = regval & ~(1 << CTRL_nDIOR_PIN);    // set nDIOR bit LOW preserving register address
+
+    /* set the direction */
+    io_8255_set_direction(true);
+
+    /* Write the control port */
+    ide_ctrl_port(reg);
+
+//    _delay_ms(1);
+
+    /* Read IDE data ports */
+    dataLval = D0_7_PIN;
+//    _delay_ms(1);
+    dataHval = D8_15_PIN;
+//    _delay_ms(1);
+
+    reg |= (1 << CTRL_nDIOR_PIN);             // set nDIOR bit HIGH preserving register address
+    /* Write the control port */
+    //ide_ctrl_port(reg);
+
+    highZ();                                  // set all I/O pins to HIGH -> impl. nDIOR release
 }
 
 // Write one word to IDE register
-void writeIDE (byte regval, byte dataLval, byte dataHval){
-  reg = regval | B01000000;             // set nDIOW bit HIGH preserving register address
-  Wire.beginTransmission(RegSel);
-  Wire.write((byte)reg);
-  Wire.endTransmission();
-  Wire.beginTransmission(DataH);        // send data for IDE D8-D15
-  Wire.write((byte)dataHval);
-  Wire.endTransmission();
-  Wire.beginTransmission(DataL);        // send data for IDE D0-D7
-  Wire.write((byte)dataLval);
-  Wire.endTransmission();
-  reg = regval & B10111111;             // set nDIOW LOW preserving register address
-  Wire.beginTransmission(RegSel);
-  Wire.write((byte)reg);
-  Wire.endTransmission();
+void writeIDE (uint8_t regval, uint8_t dataLval, uint8_t dataHval){
+
+  reg = regval | (1 << CTRL_nDIOW_PIN);             // set nDIOW bit HIGH preserving register address
+
+  /* set the direction */
+  io_8255_set_direction(false);
+
+  /* Write the control port */
+  ide_ctrl_port(reg);
+_delay_ms(1);
+  /* Write IDE data ports */
+  D0_7_PORT = dataLval;                   // send data for IDE D8-D15
+  D8_15_PORT = dataHval;                  // send data for IDE D0-D7
+
+  reg &= ~(1 << CTRL_nDIOW_PIN);  // set nDIOW LOW preserving register address
+
+  /* Write the control port */
+  ide_ctrl_port(reg);
+
+  reg |= (1 << CTRL_nDIOW_PIN);  // set nDIOW HIGH
+
+  /* Write the control port */
+  ide_ctrl_port(reg);
+
+  _delay_ms(1);
+
   highZ();                              // All I/O pins to high impedance -> impl. nDIOW release
 }
 
@@ -528,9 +752,9 @@ void DRY_set_wait(){
 
 // Send a packet starting at fnc array position idx
 void SendPac(){
-     writeIDE (AStCReg, B00001010, 0xFF);     // Set nIEN before you send the PACKET command! 
+     writeIDE (AStCReg, 0b00001010, 0xFF);     // Set nIEN before you send the PACKET command!
      writeIDE(ComSReg, 0xA0, 0xFF);           // Write Packet Command Opcode
-     delay(400);
+     _delay_ms(400);
      for (cnt=0;cnt<paclen;cnt=cnt+2){        // Send packet with length of 'paclen' 
      dataLval = fnc[(idx + cnt)];             // to IDE Data Registeraccording to idx value
      dataHval = fnc[(idx + cnt + 1)];
@@ -544,7 +768,7 @@ void SendPac(){
 void get_TOC(){
        idx =  96;                             // Pointer to Read TOC Packet
        SendPac();                             // Send read TOC command packet
-       delay(10);
+       _delay_ms(10);
        DRQ_set_wait();
        read_TOC();                            // Fetch result
 }
@@ -611,11 +835,11 @@ void read_subch_cmd(){
         } while(dataLval & (1<<3));          // Read rest of data from Data Reg. until DRQ=0
 }
 
-byte chck_disk(){
-     byte disk_ok = 0xFF;                        // assume no valid disk present.
+uint8_t chck_disk(){
+     uint8_t disk_ok = 0xFF;                        // assume no valid disk present.
      idx = 128;                                  // Send mode sense packet
      SendPac();                                  // 
-     delay(10);
+     _delay_ms(10);
      DRQ_set_wait();                             // Wait for data ready to read.
      readIDE(DataReg);                           // Read and discard Mode Sense data length
      readIDE(DataReg);                           // Get Medium Type byte
@@ -646,7 +870,7 @@ void unit_ready(){                                // Reuests unit to report stat
 void req_sense(){                                 // Request Sense Command is used to check
   idx=160;                                        // the result of the Unit Ready command.
   SendPac();                                      // The Additional Sense Code is used,
-  delay(10);                                      // see table 71 in sff8020i documentation
+  _delay_ms(10);                                      // see table 71 in sff8020i documentation
   DRQ_set_wait();
   cnt=0;
   do{
@@ -672,3 +896,227 @@ void init_task_file(){
 // END ####################################################################################
 
 
+// Start PT6311 Display
+
+
+// INCLUDE FILE
+
+#define D0_7_PORT       (PORTB)
+#define D0_7_DDR        (DDRB )
+#define D0_7_PIN        (PINB )
+
+#define PIN_DOUT        (0)       /**< PB0 */
+#define PIN_DIN         (1)       /**< PB1 */
+#define PIN_CLK         (2)       /**< PB2 */
+#define PIN_STB         (6)       /**< PC6 - Reset */
+#define PORT_STB        (PORTC)
+#define DDR_STB         (DDRC)
+
+void pt6311_init()
+{
+    // Initialize D0-D7 as inputs
+    // Initialize D8-D15 as inputs
+    /* Initialize STB, CLK, and DIN as outputs */
+    D0_7_DDR |= (1 << PIN_CLK) | (1 << PIN_DIN);
+    DDR_STB  |= (1 << PIN_STB);
+    /* Initialize DOUT as input with pull-up */
+    D0_7_DDR &= ~(1 << PIN_DOUT);
+    D0_7_PORT |= (1 << PIN_DOUT);
+    /* Set STB and CLK high, to inhibit the chip, keep DIN low */
+    D0_7_PORT |=  (1 << PIN_CLK);
+    PORT_STB  |=  (1 << PIN_STB);
+    D0_7_PORT &= ~(1 << PIN_DIN);
+}
+
+void pt6311_shift_out(uint8_t data)
+{
+    for (uint8_t i = 0; i < 8; i++)
+    {
+      D0_7_PORT &= ~(1 << PIN_CLK);
+      (data & 0x1) ? (D0_7_PORT |= (1 << PIN_DIN)) : (D0_7_PORT &= ~(1 << PIN_DIN));
+      data >>= 1;
+      _delay_us(1); /* 400 nanoseconds from datasheet; we do 1000 */
+      D0_7_PORT |= (1 << PIN_CLK);
+      _delay_us(1); /* 400 nanoseconds from datasheet; we do 1000 */
+    }
+}
+
+void pt6311_shift_in(uint8_t *data)
+{
+    *data = 0;
+    for (uint8_t i = 0; i < 8; i++)
+    {
+      D0_7_PORT &= ~(1 << PIN_CLK);
+      _delay_us(1); /* 400 nanoseconds from datasheet; we do 1000 */
+      if ((D0_7_PIN >> PIN_DOUT) & 0x1) *data |= 0x1;
+      *data <<= 1;
+      D0_7_PORT |= (1 << PIN_CLK);
+      _delay_us(1); /* 400 nanoseconds from datasheet; we do 1000 */
+
+    }
+}
+
+void pt6311_write(uint8_t command, const uint8_t *data, uint8_t data_len)
+{
+    PORT_STB &= ~(1 << PIN_STB);   /* STB low  -> assert */
+    _delay_us(1);                   /* 1 microsecond from datasheet STB assertion time */
+    pt6311_shift_out(command);      /* shift out the command */
+    if ((data != NULL) && (data_len > 0))
+    {
+      do
+      {
+        data_len--;
+        pt6311_shift_out(*data);
+        data++;
+      } while(data_len > 0);
+    }
+    PORT_STB |= (1 << PIN_STB);    /* STB high -> deassert */
+    _delay_us(1);                   /* 1 microsecond from datasheet STB assertion time */
+}
+
+void pt6311_read(uint8_t command, uint8_t *data, uint8_t data_len)
+{
+    PORT_STB &= ~(1 << PIN_STB);   /* STB low  -> assert */
+    _delay_us(1);                   /* 1 microsecond from datasheet STB assertion time */
+    pt6311_shift_out(command);      /* shift out the command */
+        _delay_us(1);                   /* 1 microsecond from datasheet STB assertion time */
+    if ((data != NULL) && (data_len > 0))
+    {
+      do
+      {
+        data_len--;
+        pt6311_shift_in(data);
+        data++;
+      } while(data_len > 0);
+    }
+    PORT_STB |= (1 << PIN_STB);    /* STB high -> deassert */
+    _delay_us(1);                   /* 1 microsecond from datasheet STB assertion time */
+}
+
+// SOURCE FILE
+
+
+
+
+/*
+In the final project the STB pin will be always "HIGH" if the IDE port is accessed.
+Then, when not accessed, the STB pin will follow the STB output from the microcontroller.
+
+AND gate made by diodes?
+
+*/
+
+
+
+
+uint8_t demo_buffer[3] = { 0x00, 0x00, 0x00 };
+
+void pt6311_setup()
+{
+//  Serial.begin(115200);
+  pt6311_init();
+
+  pt6311_read(0x46, demo_buffer, 3);
+  if (KEY_PRESSED(demo_buffer, KEY_POWR_MASK, KEY_POWR_BYTE))
+  {
+      demo_buffer[0] = 0xFF;
+            demo_buffer[1] = 0xFF;
+                  demo_buffer[2] = 0xFF;
+  }
+
+  pt6311_write(0x00, NULL, 0);  /* COMMAND 1: DISPLAY MODE SETTING COMMANDS */
+  pt6311_write(0x8C, NULL, 0);  /* COMMAND 4: display control commands */
+  pt6311_write(0x40, NULL, 0);  /* COMMAND 2: DATA SETTING COMMANDS */
+  pt6311_write(0xC0, demo_buffer, sizeof(demo_buffer));  /* COMMAND 3: ADDRESS SETTING COMMANDS */
+  pt6311_write(0xC3, demo_buffer, sizeof(demo_buffer));  /* COMMAND 3: ADDRESS SETTING COMMANDS */
+  pt6311_write(0xC6, demo_buffer, sizeof(demo_buffer));  /* COMMAND 3: ADDRESS SETTING COMMANDS */
+  pt6311_write(0xC9, demo_buffer, sizeof(demo_buffer));  /* COMMAND 3: ADDRESS SETTING COMMANDS */
+  pt6311_write(0xC0 + 0x0C, demo_buffer, sizeof(demo_buffer));  /* COMMAND 3: ADDRESS SETTING COMMANDS */
+  pt6311_write(0xC0 + 0x0F, demo_buffer, sizeof(demo_buffer));  /* COMMAND 3: ADDRESS SETTING COMMANDS */
+  pt6311_write(0xC0 + 0x12, demo_buffer, sizeof(demo_buffer));  /* COMMAND 3: ADDRESS SETTING COMMANDS */
+  pt6311_write(0xC0 + 0x15, demo_buffer, sizeof(demo_buffer));  /* COMMAND 3: ADDRESS SETTING COMMANDS */
+  while (KEY_PRESSED(demo_buffer, KEY_POWR_MASK, KEY_POWR_BYTE))
+  {
+        pt6311_read(0x46, demo_buffer, 3);
+  }
+
+  //loopDisplay();
+}
+
+/*
+0x2
+0x4
+0x8
+0x10
+0x20
+0x40
+0x80
+*/
+
+
+uint8_t seven_segment_mapping[] =
+{
+0xee ,
+0x24 ,
+0xd6 ,
+0xb6 ,
+0x3c ,
+0xba ,
+0xfa ,
+0x26 ,
+0xfe ,
+0xbe
+};
+
+void dbg_display_number_and_wait_btn(uint32_t number)
+{
+  uint32_t bf = 0;
+  display_number(number);
+  // wait press
+  do
+  {
+    pt6311_read(0x46, (uint8_t*)&bf, 3);
+  } while(bf == 0);
+  // wait release
+  do
+  {
+    pt6311_read(0x46, (uint8_t*)&bf, 3);
+  } while(bf != 0);
+}
+
+void display_number(uint32_t number)
+{
+    uint8_t buffer[3] = { 0, 0, 0 };
+
+    buffer[1] = seven_segment_mapping[(number % 1000UL) % 10];
+    number /= 10UL;
+    pt6311_write(0x40, NULL, 0);  /* COMMAND 2: DATA SETTING COMMANDS */
+    pt6311_write(0xC0, buffer, 3);  /* COMMAND 3: ADDRESS SETTING COMMANDS */
+
+    buffer[1] = seven_segment_mapping[(number % 100UL) % 10];
+    buffer[0] = seven_segment_mapping[(number % 100UL) % 10];
+    number /= 10UL;
+    pt6311_write(0x40, NULL, 0);  /* COMMAND 2: DATA SETTING COMMANDS */
+    pt6311_write(0xC3, buffer, 3);  /* COMMAND 3: ADDRESS SETTING COMMANDS */
+
+    buffer[0] = buffer[1] = seven_segment_mapping[(number % 10UL) % 10];
+    number /= 10UL;
+    pt6311_write(0x40, NULL, 0);  /* COMMAND 2: DATA SETTING COMMANDS */
+    pt6311_write(0xC6, buffer, 3);  /* COMMAND 3: ADDRESS SETTING COMMANDS */
+
+    buffer[0] = buffer[1] = seven_segment_mapping[number % 10];
+    pt6311_write(0x40, NULL, 0);  /* COMMAND 2: DATA SETTING COMMANDS */
+    pt6311_write(0xC9, buffer, 3);  /* COMMAND 3: ADDRESS SETTING COMMANDS */
+
+}
+
+int main(void) {
+    /* Call the "Arduino" setup() */
+    setup();
+
+    do
+    {
+        /* Call the periodc logic */
+        loop();
+    } while(1);
+}
