@@ -1,3 +1,6 @@
 [submodule "src/keypad"]
 	path = src/keypad
 	url = https://github.com/lmiori92/keypad.git
+[submodule "src/timers"]
+	path = src/timers
+	url = git@github.com:lmiori92/timers.git

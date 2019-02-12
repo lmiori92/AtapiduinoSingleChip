@@ -46,7 +46,9 @@
 #include <util/delay.h>
 
 /* Dependencies */
+#include "pt6311.h"
 #include "keypad/keypad.h"
+#include "timers/timer.h"
 
 // IDE Register addresses
 const uint8_t DataReg = 0xF0;         // Addr. Data register of IDE device.
@@ -106,57 +108,35 @@ uint8_t fnc[]= {
   0x4E,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00  // idx=176 Stop disk
 };
 
-
-uint8_t chck_disk();
+void    setup(void);
+void    loop(void);
+void    highZ(void);
+void    Disp_CD_data(void);
+void    curr_MSF(void);
+void    play(void);
+void    stop(void);
+void    eject(void);
+void    load(void);
+void    pause(void);
+void    resume(void);
+void    stop_disk(void);
+void    reset_IDE(void);
+void    readIDE(uint8_t reg);
+void    writeIDE(uint8_t, uint8_t, uint8_t);
+void    BSY_clear_wait();
+void    DRQ_clear_wait();
+void    DRY_set_wait();
+void    SendPac(void);
+void    get_TOC(void);
+void    read_TOC(void);
+void    read_subch_cmd(void);
+uint8_t chck_disk(void);
+void    unit_ready(void);
+void    req_sense(void);
+void    init_task_file(void);
+void SendPac(void);
 
 // End of Definitions ########################################################################
-
-
-// DISPLAY ROUTINES
-
-#define INDEX_POS    (0x1)
-#define SEVEN_SEG_A_POS   (0x2)
-#define SEVEN_SEG_B_POS   (0x4)
-#define SEVEN_SEG_F_POS   (0x8)
-#define SEVEN_SEG_G_POS   (0x10)
-#define SEVEN_SEG_C_POS   (0x20)
-#define SEVEN_SEG_E_POS   (0x40)
-#define SEVEN_SEG_D_POS   (0x80)
-
-
-#define KEY_PLAY_MASK  0x40
-#define KEY_PLAY_BYTE  0x01
-#define KEY_PLAY    KEY_PLAY_MASK, KEY_PLAY_BYTE
-
-#define KEY_STOP_MASK  0x04
-#define KEY_STOP_BYTE  0x01
-#define KEY_STOP    KEY_STOP_MASK, KEY_STOP_BYTE
-
-#define KEY_FREW_MASK  0x20
-#define KEY_FREW_BYTE  0x01
-#define KEY_FREW    KEY_FREW_MASK, KEY_FREW_BYTE
-
-#define KEY_FFWD_MASK  0x02
-#define KEY_FFWD_BYTE  0x00
-#define KEY_FFWD    KEY_FFWD_MASK, KEY_FFWD_BYTE
-
-#define KEY_EJCT_MASK  0x04
-#define KEY_EJCT_BYTE  0x00
-#define KEY_EJCT    KEY_EJCT_MASK, KEY_EJCT_BYTE
-
-#define KEY_POWR_MASK  0x02
-#define KEY_POWR_BYTE  0x01
-#define KEY_POWR    KEY_POWR_MASK, KEY_POWR_BYTE
-
-#define KEY_PRESSED(key_buf, key_mask, key_byte)  ((key_buf[key_byte] & key_mask) == key_mask)
-
-void pt6311_setup();
-void display_number(uint32_t number);
-void dbg_display_number_and_wait_btn(uint32_t number);
-
-// END OF DISPLAY ROUTINES
-
-// empty routines
 
 void serial_println()
 {
@@ -564,37 +544,37 @@ void curr_MSF(){                               // During PLAY or PAUSE operation
 // Auxiliary functions User Interface
 // ##################################
 
-void play(){
+void play(void){
     idx = 48;                                     // pointer to play function and Play
     SendPac();                                    // from MSF location stored at idx=(51-56)
 }                                                 // See also doc. sff8020i table 76
-void stop(){
+void stop(void){
     idx = 32;                                     // pointer to stop unit function
     SendPac();
 }
-void eject(){
+void eject(void){
     idx = 0;                                      // pointer to eject function
     SendPac();
 }
-void load(){
+void load(void){
     idx = 16;                                     // pointer to load
     SendPac();
 }
-void pause(){
+void pause(void){
      idx = 64;                                    // pointer to hold
      SendPac();
 }
-void resume(){
+void resume(void){
      idx = 80;                                    // pointer to resume
      SendPac();
 }
-void stop_disk(){
+void stop_disk(void){
     idx = 176;                                    // pointer to stop disk function
     SendPac();
 }
 
 // Set to high impedance all ports of PCF8475 interfacing to IDE.
-void highZ(){
+void highZ(void){
     /* All outputs high: deassert IDE bus */
     ide_ctrl_port(0xFFU);
     /* All data ports as input */
@@ -610,7 +590,7 @@ void highZ(){
 }
 
 // Reset Device
-void reset_IDE(){
+void reset_IDE(void){
 
   /* STUB ONLY: hard reset is only performed when hard-resetting
    * the microcontroller. nRST is connected to PC6 (Reset).
@@ -719,28 +699,28 @@ _delay_ms(1);
 // #################################################
 
 // Wait for BSY clear
-void BSY_clear_wait(){
+void BSY_clear_wait(void){
   do{
     readIDE(ComSReg);
   } while(dataLval & (1<<7));
 }
 
 // Wait for DRQ clear
-void DRQ_clear_wait(){
+void DRQ_clear_wait(void){
   do{
     readIDE(ComSReg);
   } while(dataLval & (1<<3));
 }
 
 // Wait for DRQ set
-void DRQ_set_wait(){
+void DRQ_set_wait(void){
      do{
         readIDE(ComSReg);
      }while((dataLval & ~(1<<3)) == true);
 }
 
 // Wait for DRY set
-void DRY_set_wait(){
+void DRY_set_wait(void){
      do{
         readIDE(ComSReg);
      }while((dataLval & ~(1<<6)) == true);
@@ -751,7 +731,7 @@ void DRY_set_wait(){
 // ##################################
 
 // Send a packet starting at fnc array position idx
-void SendPac(){
+void SendPac(void){
      writeIDE (AStCReg, 0b00001010, 0xFF);     // Set nIEN before you send the PACKET command!
      writeIDE(ComSReg, 0xA0, 0xFF);           // Write Packet Command Opcode
      _delay_ms(400);
@@ -765,7 +745,7 @@ void SendPac(){
      BSY_clear_wait();
 }
 
-void get_TOC(){
+void get_TOC(void){
        idx =  96;                             // Pointer to Read TOC Packet
        SendPac();                             // Send read TOC command packet
        _delay_ms(10);
@@ -773,7 +753,7 @@ void get_TOC(){
        read_TOC();                            // Fetch result
 }
 
-void read_TOC(){
+void read_TOC(void){
         readIDE(DataReg);                      // TOC Data Length not needed, don't care
         readIDE(DataReg);                      // Read first and last session
         s_trck = dataLval;
@@ -807,7 +787,7 @@ void read_TOC(){
         } while(dataLval & (1<<3));            // Read data from DataRegister until DRQ=0
 }
 
-void read_subch_cmd(){
+void read_subch_cmd(void){
         idx=144;                             // Pointer to read Subchannel Packet
         SendPac();                           // Send read Subchannel command packet
         readIDE(DataReg);                    // Get Audio Status
@@ -835,7 +815,7 @@ void read_subch_cmd(){
         } while(dataLval & (1<<3));          // Read rest of data from Data Reg. until DRQ=0
 }
 
-uint8_t chck_disk(){
+uint8_t chck_disk(void){
      uint8_t disk_ok = 0xFF;                        // assume no valid disk present.
      idx = 128;                                  // Send mode sense packet
      SendPac();                                  // 
@@ -862,12 +842,12 @@ uint8_t chck_disk(){
      return(disk_ok);
 }
 
-void unit_ready(){                                // Reuests unit to report status
+void unit_ready(void){                                // Reuests unit to report status
         idx=112;                                  // used to check_unit_ready
         SendPac();     
 }
 
-void req_sense(){                                 // Request Sense Command is used to check
+void req_sense(void){                                 // Request Sense Command is used to check
   idx=160;                                        // the result of the Unit Ready command.
   SendPac();                                      // The Additional Sense Code is used,
   _delay_ms(10);                                      // see table 71 in sff8020i documentation
@@ -884,7 +864,7 @@ void req_sense(){                                 // Request Sense Command is us
      } while(dataLval & (1<<3));                  // Skip rest of packet
 }
 
-void init_task_file(){
+void init_task_file(void){
   writeIDE(ErrFReg, 0x00, 0xFF);            // Set Feature register = 0 (no overlapping and no DMA)
   writeIDE(CylHReg, 0x02, 0xFF);            // Set PIO buffer to max. transfer length (= 200h)
   writeIDE(CylLReg, 0x00, 0xFF);
@@ -901,97 +881,8 @@ void init_task_file(){
 
 // INCLUDE FILE
 
-#define D0_7_PORT       (PORTB)
-#define D0_7_DDR        (DDRB )
-#define D0_7_PIN        (PINB )
 
-#define PIN_DOUT        (0)       /**< PB0 */
-#define PIN_DIN         (1)       /**< PB1 */
-#define PIN_CLK         (2)       /**< PB2 */
-#define PIN_STB         (6)       /**< PC6 - Reset */
-#define PORT_STB        (PORTC)
-#define DDR_STB         (DDRC)
 
-void pt6311_init()
-{
-    // Initialize D0-D7 as inputs
-    // Initialize D8-D15 as inputs
-    /* Initialize STB, CLK, and DIN as outputs */
-    D0_7_DDR |= (1 << PIN_CLK) | (1 << PIN_DIN);
-    DDR_STB  |= (1 << PIN_STB);
-    /* Initialize DOUT as input with pull-up */
-    D0_7_DDR &= ~(1 << PIN_DOUT);
-    D0_7_PORT |= (1 << PIN_DOUT);
-    /* Set STB and CLK high, to inhibit the chip, keep DIN low */
-    D0_7_PORT |=  (1 << PIN_CLK);
-    PORT_STB  |=  (1 << PIN_STB);
-    D0_7_PORT &= ~(1 << PIN_DIN);
-}
-
-void pt6311_shift_out(uint8_t data)
-{
-    for (uint8_t i = 0; i < 8; i++)
-    {
-      D0_7_PORT &= ~(1 << PIN_CLK);
-      (data & 0x1) ? (D0_7_PORT |= (1 << PIN_DIN)) : (D0_7_PORT &= ~(1 << PIN_DIN));
-      data >>= 1;
-      _delay_us(1); /* 400 nanoseconds from datasheet; we do 1000 */
-      D0_7_PORT |= (1 << PIN_CLK);
-      _delay_us(1); /* 400 nanoseconds from datasheet; we do 1000 */
-    }
-}
-
-void pt6311_shift_in(uint8_t *data)
-{
-    *data = 0;
-    for (uint8_t i = 0; i < 8; i++)
-    {
-      D0_7_PORT &= ~(1 << PIN_CLK);
-      _delay_us(1); /* 400 nanoseconds from datasheet; we do 1000 */
-      if ((D0_7_PIN >> PIN_DOUT) & 0x1) *data |= 0x1;
-      *data <<= 1;
-      D0_7_PORT |= (1 << PIN_CLK);
-      _delay_us(1); /* 400 nanoseconds from datasheet; we do 1000 */
-
-    }
-}
-
-void pt6311_write(uint8_t command, const uint8_t *data, uint8_t data_len)
-{
-    PORT_STB &= ~(1 << PIN_STB);   /* STB low  -> assert */
-    _delay_us(1);                   /* 1 microsecond from datasheet STB assertion time */
-    pt6311_shift_out(command);      /* shift out the command */
-    if ((data != NULL) && (data_len > 0))
-    {
-      do
-      {
-        data_len--;
-        pt6311_shift_out(*data);
-        data++;
-      } while(data_len > 0);
-    }
-    PORT_STB |= (1 << PIN_STB);    /* STB high -> deassert */
-    _delay_us(1);                   /* 1 microsecond from datasheet STB assertion time */
-}
-
-void pt6311_read(uint8_t command, uint8_t *data, uint8_t data_len)
-{
-    PORT_STB &= ~(1 << PIN_STB);   /* STB low  -> assert */
-    _delay_us(1);                   /* 1 microsecond from datasheet STB assertion time */
-    pt6311_shift_out(command);      /* shift out the command */
-        _delay_us(1);                   /* 1 microsecond from datasheet STB assertion time */
-    if ((data != NULL) && (data_len > 0))
-    {
-      do
-      {
-        data_len--;
-        pt6311_shift_in(data);
-        data++;
-      } while(data_len > 0);
-    }
-    PORT_STB |= (1 << PIN_STB);    /* STB high -> deassert */
-    _delay_us(1);                   /* 1 microsecond from datasheet STB assertion time */
-}
 
 // SOURCE FILE
 
@@ -1005,54 +896,6 @@ Then, when not accessed, the STB pin will follow the STB output from the microco
 AND gate made by diodes?
 
 */
-
-
-
-
-uint8_t demo_buffer[3] = { 0x00, 0x00, 0x00 };
-
-void pt6311_setup()
-{
-//  Serial.begin(115200);
-  pt6311_init();
-
-  pt6311_read(0x46, demo_buffer, 3);
-  if (KEY_PRESSED(demo_buffer, KEY_POWR_MASK, KEY_POWR_BYTE))
-  {
-      demo_buffer[0] = 0xFF;
-            demo_buffer[1] = 0xFF;
-                  demo_buffer[2] = 0xFF;
-  }
-
-  pt6311_write(0x00, NULL, 0);  /* COMMAND 1: DISPLAY MODE SETTING COMMANDS */
-  pt6311_write(0x8C, NULL, 0);  /* COMMAND 4: display control commands */
-  pt6311_write(0x40, NULL, 0);  /* COMMAND 2: DATA SETTING COMMANDS */
-  pt6311_write(0xC0, demo_buffer, sizeof(demo_buffer));  /* COMMAND 3: ADDRESS SETTING COMMANDS */
-  pt6311_write(0xC3, demo_buffer, sizeof(demo_buffer));  /* COMMAND 3: ADDRESS SETTING COMMANDS */
-  pt6311_write(0xC6, demo_buffer, sizeof(demo_buffer));  /* COMMAND 3: ADDRESS SETTING COMMANDS */
-  pt6311_write(0xC9, demo_buffer, sizeof(demo_buffer));  /* COMMAND 3: ADDRESS SETTING COMMANDS */
-  pt6311_write(0xC0 + 0x0C, demo_buffer, sizeof(demo_buffer));  /* COMMAND 3: ADDRESS SETTING COMMANDS */
-  pt6311_write(0xC0 + 0x0F, demo_buffer, sizeof(demo_buffer));  /* COMMAND 3: ADDRESS SETTING COMMANDS */
-  pt6311_write(0xC0 + 0x12, demo_buffer, sizeof(demo_buffer));  /* COMMAND 3: ADDRESS SETTING COMMANDS */
-  pt6311_write(0xC0 + 0x15, demo_buffer, sizeof(demo_buffer));  /* COMMAND 3: ADDRESS SETTING COMMANDS */
-  while (KEY_PRESSED(demo_buffer, KEY_POWR_MASK, KEY_POWR_BYTE))
-  {
-        pt6311_read(0x46, demo_buffer, 3);
-  }
-
-  //loopDisplay();
-}
-
-/*
-0x2
-0x4
-0x8
-0x10
-0x20
-0x40
-0x80
-*/
-
 
 uint8_t seven_segment_mapping[] =
 {
