@@ -43,6 +43,7 @@
 
 /* AVR includes */
 #include <avr/io.h>
+#include <avr/interrupt.h>
 #include <util/delay.h>
 
 /* Dependencies */
@@ -137,6 +138,16 @@ void    init_task_file(void);
 void SendPac(void);
 
 // End of Definitions ########################################################################
+
+/**
+ * Implementation of the timer interrupt.
+ * This timer shall tick at 1 millisecond period (1000kHz)
+ */
+ISR(TIMER0_COMPA_vect)
+{
+    /* increment the timer variable */
+    milliseconds_since_boot += 1;
+}
 
 void serial_println()
 {
@@ -397,18 +408,22 @@ void loop(void) {
   char control = ' ';
   uint8_t btnbuf[5] = { 0 } ;
 
-    pt6311_read(0x46, btnbuf, 3);
+  pt6311_read(0x46, btnbuf, 3);
 
-//  if (KEY_PRESSED(btnbuf, KEY_PLAY)) Serial.println("PLAY");
+  /* Associate the raw keypresses to the keypad logic */
+  keypad_set_input(BUTTON_EJECT,    KEY_PRESSED(btnbuf, KEY_EJCT_MASK, KEY_EJCT_BYTE));
+  keypad_set_input(BUTTON_STOP,     KEY_PRESSED(btnbuf, KEY_STOP_MASK, KEY_STOP_BYTE));
+  keypad_set_input(BUTTON_PLAY,     KEY_PRESSED(btnbuf, KEY_PLAY_MASK, KEY_PLAY_BYTE));
+  keypad_set_input(BUTTON_FFWD,     KEY_PRESSED(btnbuf, KEY_FFWD_MASK, KEY_FFWD_BYTE));
+  keypad_set_input(BUTTON_REW,      KEY_PRESSED(btnbuf, KEY_FREW_MASK, KEY_FREW_BYTE));
+  keypad_set_input(BUTTON_POWER,    KEY_PRESSED(btnbuf, KEY_POWR_MASK, KEY_POWR_BYTE));
 
-  //if (Serial.available())
-  {
-  //  control = Serial.read(); //reads serial input
-  }
-
+  /* this logic shall always be run periodically */
+  keypad_periodic(timeout(10, SOFT_TIMER_0));
 
   // Scan push buttons
-  if(KEY_PRESSED(btnbuf, KEY_EJCT_MASK, KEY_EJCT_BYTE)/* digitalRead(EJCT) == LOW */){
+  if(keypad_clicked(BUTTON_EJECT) == KEY_CLICK)
+  {
     //lcd.clear();
     toc=false;                                    // Set toc invalid
     switch(chck_disk()) {
@@ -428,14 +443,14 @@ void loop(void) {
     a_trck = s_trck;                             // Reset to start track
   }
   
-  if(control == 's'/* digitalRead(STOP) == LOW */){
+  if(keypad_clicked(BUTTON_STOP) == KEY_CLICK){
     a_trck=s_trck;                               // Reset to start track
     stop_disk();                                 // Stop Disk
     stop();                                      // Stop unit    
     toc=false;
   }
   
-  if(KEY_PRESSED(btnbuf, KEY_PLAY_MASK, KEY_PLAY_BYTE)/* digitalRead(PLAY) == LOW */){                  // Play has been pressed
+  if(keypad_clicked(BUTTON_PLAY) == KEY_CLICK){                  // Play has been pressed
       switch(aud_stat){
          case 0x15:                              // If stopped
          play();                                 // start play
@@ -450,7 +465,7 @@ void loop(void) {
     //lcd.clear();                                 // is removed using device eject buton
   }                                              // while play in progress
 
-  if(KEY_PRESSED(btnbuf, KEY_FFWD_MASK, KEY_FFWD_BYTE)/* digitalRead(NEXT) == LOW */){
+  if(keypad_clicked(BUTTON_FFWD) == KEY_CLICK){
     a_trck = a_trck + 1;                         // a_track becomes next track
     if(a_trck > e_trck){(a_trck = s_trck);}      // over last track? -> point to start track
     get_TOC();                                   // Get MSF for a_trck
@@ -458,7 +473,7 @@ void loop(void) {
     fnc[52] = d_trck_s;                          // in play packet and start play
     fnc[53] = d_trck_f;
     play();
-    if(aud_stat == 0x12 |                        // If paused or stopped -> pause
+    if(aud_stat == 0x12 ||                       // If paused or stopped -> pause
        aud_stat == 0x15)
      {
      pause();
@@ -466,7 +481,7 @@ void loop(void) {
     //lcd.clear();
   }
   
-  if(control == 'b'/* digitalRead(PREV) == LOW */){                 // Basically like the NEXT function above
+  if(keypad_clicked(BUTTON_REW) == KEY_CLICK){                 // Basically like the NEXT function above
     a_trck = a_trck - 1;                        // only backwards
     if(a_trck < s_trck){(a_trck = e_trck);}
     get_TOC();
@@ -474,7 +489,7 @@ void loop(void) {
     fnc[52] = d_trck_s;
     fnc[53] = d_trck_f;
     play();
-    if(aud_stat == 0x12 |
+    if(aud_stat == 0x12 ||
        aud_stat == 0x15)
      {
      pause();
@@ -494,7 +509,7 @@ void loop(void) {
         /*Serial.println("     PAUSE   ");*/
       curr_MSF();
     }
-    if(aud_stat==0x15 & !toc){                  // If stopped and TOC invalid
+    if(aud_stat==0x15 && !toc){                  // If stopped and TOC invalid
       get_TOC();                                // try to read TOC 
       Disp_CD_data();                           // display TOC data and set TOC valid
       toc=true;                                 // to prevent reading over and over
@@ -595,15 +610,6 @@ void reset_IDE(void){
   /* STUB ONLY: hard reset is only performed when hard-resetting
    * the microcontroller. nRST is connected to PC6 (Reset).
    */
-
-//  Wire.beginTransmission(RegSel);
-//  Wire.write((byte)B11011111);                // Bit 5 LOW to reset IDE via nRESET
-//  Wire.endTransmission();
-  _delay_ms(40);
-//  Wire.beginTransmission(RegSel);
-//  Wire.write((byte)B11111111);                // Release reset
-//  Wire.endTransmission();
-  _delay_ms(20);
 }
 
 /*
@@ -649,13 +655,9 @@ void readIDE (uint8_t regval)
     /* Write the control port */
     ide_ctrl_port(reg);
 
-//    _delay_ms(1);
-
     /* Read IDE data ports */
     dataLval = D0_7_PIN;
-//    _delay_ms(1);
     dataHval = D8_15_PIN;
-//    _delay_ms(1);
 
     reg |= (1 << CTRL_nDIOR_PIN);             // set nDIOR bit HIGH preserving register address
     /* Write the control port */
@@ -674,7 +676,7 @@ void writeIDE (uint8_t regval, uint8_t dataLval, uint8_t dataHval){
 
   /* Write the control port */
   ide_ctrl_port(reg);
-_delay_ms(1);
+  _delay_ms(1);
   /* Write IDE data ports */
   D0_7_PORT = dataLval;                   // send data for IDE D8-D15
   D8_15_PORT = dataHval;                  // send data for IDE D0-D7
@@ -794,8 +796,8 @@ void read_subch_cmd(void){
         if(dataHval==0x13){                  // Play operation successfully completed
           dataHval=0x15;                     // means drive is neither paused nor in play
         }                                    // so treat as stopped
-        if(dataHval==0x11|                   // playing
-           dataHval==0x12|                   // paused
+        if(dataHval==0x11||                  // playing
+           dataHval==0x12||                  // paused
            dataHval==0x15)                   // stopped
            {aud_stat=dataHval;               // 
         }else{
@@ -824,11 +826,11 @@ uint8_t chck_disk(void){
      readIDE(DataReg);                           // Read and discard Mode Sense data length
      readIDE(DataReg);                           // Get Medium Type byte
                                                  // If valid audio disk present disk_ok=0x00
-     if (dataLval == 0x02 | 
-         dataLval == 0x06 |
-         dataLval == 0x12 |
-         dataLval == 0x16 |
-         dataLval == 0x22 |
+     if (dataLval == 0x02 ||
+         dataLval == 0x06 ||
+         dataLval == 0x12 ||
+         dataLval == 0x16 ||
+         dataLval == 0x22 ||
          dataLval == 0x26)
          {disk_ok = 0x00;
      }
@@ -953,7 +955,16 @@ void display_number(uint32_t number)
 
 }
 
-int main(void) {
+int main(void)
+{
+
+    /* Start 1000Hz system timer:
+     * - Frequency / Prescaler / Target Frequency - 1 */
+    OCR0A = F_CPU / 64 / 1000 - 1;
+    TCCR0A = _BV(WGM01);
+    TCCR0B = _BV(CS00) | _BV(CS01);     /* 64x prescaler */
+    TIMSK0 = _BV(OCIE0A);               /* enable interrupt routine */
+
     /* Call the "Arduino" setup() */
     setup();
 
