@@ -371,8 +371,8 @@ void setup(){
       }
     }
     if((cnt > 26) & (cnt < 47)){                      // Read Model
-      dbg_display_number_and_wait_btn(dataHval);
-      dbg_display_number_and_wait_btn(dataLval);
+      //dbg_display_number_and_wait_btn(dataHval);
+      //dbg_display_number_and_wait_btn(dataLval);
     }
     cnt++;
     readIDE(ComSReg);                             // Read Status Register and check DRQ,
@@ -405,7 +405,6 @@ void setup(){
 
 void loop(void) {
 
-  char control = ' ';
   uint8_t btnbuf[5] = { 0 } ;
 
   pt6311_read(0x46, btnbuf, 3);
@@ -420,6 +419,8 @@ void loop(void) {
 
   /* this logic shall always be run periodically */
   keypad_periodic(timeout(10, SOFT_TIMER_0));
+
+  display_number(milliseconds_since_boot);
 
   // Scan push buttons
   if(keypad_clicked(BUTTON_EJECT) == KEY_CLICK)
@@ -676,7 +677,7 @@ void writeIDE (uint8_t regval, uint8_t dataLval, uint8_t dataHval){
 
   /* Write the control port */
   ide_ctrl_port(reg);
-  _delay_ms(1);
+  //_delay_ms(1);
   /* Write IDE data ports */
   D0_7_PORT = dataLval;                   // send data for IDE D8-D15
   D8_15_PORT = dataHval;                  // send data for IDE D0-D7
@@ -691,7 +692,7 @@ void writeIDE (uint8_t regval, uint8_t dataLval, uint8_t dataHval){
   /* Write the control port */
   ide_ctrl_port(reg);
 
-  _delay_ms(1);
+  //_delay_ms(1);
 
   highZ();                              // All I/O pins to high impedance -> impl. nDIOW release
 }
@@ -967,6 +968,9 @@ int main(void)
 
     /* Call the "Arduino" setup() */
     setup();
+
+    /* Init done, enable interrupts and start dancing */
+    sei();
 
     do
     {
