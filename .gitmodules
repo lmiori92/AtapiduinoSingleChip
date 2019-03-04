@@ -4,3 +4,9 @@
 [submodule "src/timers"]
 	path = src/timers
 	url = git@github.com:lmiori92/timers.git
+[submodule "src/deasplay"]
+	path = src/deasplay
+	url = git@github.com:lmiori92/deasplay.git
+[submodule "src/deasplay-pt6311"]
+	path = src/deasplay-pt6311
+	url = git@github.com:lmiori92/deasplay-pt6311.git

@@ -73,9 +73,9 @@
                                     								
                                 </option>
                                 								
-                                <option id="de.innot.avreclipse.compiler.option.optimize.functionsections.301224787" superClass="de.innot.avreclipse.compiler.option.optimize.functionsections" value="false" valueType="boolean"/>
+                                <option id="de.innot.avreclipse.compiler.option.optimize.functionsections.301224787" name="Each function in its own section (-ffunction-sections)" superClass="de.innot.avreclipse.compiler.option.optimize.functionsections" value="false" valueType="boolean"/>
                                 								
-                                <option id="de.innot.avreclipse.compiler.option.optimize.datasections.1016939347" superClass="de.innot.avreclipse.compiler.option.optimize.datasections" value="false" valueType="boolean"/>
+                                <option id="de.innot.avreclipse.compiler.option.optimize.datasections.1016939347" name="Each data item in its own section (-fdata-sections)" superClass="de.innot.avreclipse.compiler.option.optimize.datasections" value="false" valueType="boolean"/>
                                 								
                                 <inputType id="de.innot.avreclipse.compiler.winavr.input.2018716479" name="C Source Files" superClass="de.innot.avreclipse.compiler.winavr.input"/>
                                 							
@@ -288,6 +288,16 @@
             <autodiscovery enabled="true" problemReportingEnabled="true" selectedProfileId="de.innot.avreclipse.core.AVRGCCManagedMakePerProjectProfileC"/>
             		
         </scannerConfigBuildInfo>
+        	
+    </storageModule>
+    	
+    <storageModule moduleId="org.eclipse.cdt.internal.ui.text.commentOwnerProjectMappings">
+        		
+        <doc-comment-owner id="org.eclipse.cdt.ui.doxygen">
+            			
+            <path value=""/>
+            		
+        </doc-comment-owner>
         	
     </storageModule>
     

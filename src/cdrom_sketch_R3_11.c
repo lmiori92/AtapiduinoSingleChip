@@ -6,9 +6,9 @@
 
     Copyright (C) 2012  Carlos Durandal
     Copyright (C) 2019  Lorenzo Miori:
-        - removed arduino library dependecy (standard C libraries + custom modules)
+        - removed Arduino library dependency (standard C + gcc libraries + custom modules)
         - removed PCF8574 hardware (Single Chip solution, atmega328p only)
-        - implemented pt6311 led-segment driver chip driver
+        - implemented pt6311 led-segment driver chip driver (but can work with others, too)
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -28,18 +28,22 @@
  
     See documentation for schematics and pinout.
     The modified program runs on a single atmega328(p) without requiring the external
-    crystal nor the 3x i2c extenders.
+    crystal nor the 3x i2c extender.
     For the extra missing Digital Output (nDIOw), AREF has been exploited plus an external
     buffer transistor since AREF can only source current.
+
+    The atmega328p fuses shall be set so that
+    the internal 8 MHz clock is selected in order to free the
+    PB6 and PB7 i/o pins up. Additionally, RESET is inhibited and selected as GPIO.
 
  ##########################################################################################
 */
 
 /* Standard includes */
-
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdio.h>
 
 /* AVR includes */
 #include <avr/io.h>
@@ -47,7 +51,7 @@
 #include <util/delay.h>
 
 /* Dependencies */
-#include "pt6311.h"
+#include "deasplay/deasplay.h"
 #include "keypad/keypad.h"
 #include "timers/timer.h"
 
@@ -86,8 +90,6 @@ uint8_t d_trck_s;
 uint8_t d_trck_f;
 uint8_t aud_stat = 0xFF;              // subchannel data: 0x11=play, 0x12=pause, 0x15=stop
 uint8_t asc;
-long prev_millis=0;
-long interval=100;
 bool toc;
 
 // Array containing sets of 16 uint8_t packets corresponding to part of the CD-ROM
@@ -109,9 +111,9 @@ uint8_t fnc[]= {
   0x4E,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00  // idx=176 Stop disk
 };
 
-void    setup(void);
+void    ide_initialization(void);
 void    loop(void);
-void    highZ(void);
+static void    highZ(void);
 void    Disp_CD_data(void);
 void    curr_MSF(void);
 void    play(void);
@@ -149,25 +151,6 @@ ISR(TIMER0_COMPA_vect)
     milliseconds_since_boot += 1;
 }
 
-void serial_println()
-{
-    /* Stub that will be used later on ... */
-}
-
-long millis(void)
-{
-    /* Stud that will be replaced with timer library */
-    return 0;
-}
-
-// empty routines end
-
-/*
- * The atmega328p fuses shall be set so that
- * the internal 8 MHz clock is selected in order to free the
- * PB6 and PB7 i/o pins up.
- */
-
 #define D0_7_PORT       (PORTB)
 #define D0_7_DDR        (DDRB )
 #define D0_7_PIN        (PINB )
@@ -187,17 +170,8 @@ long millis(void)
 #define CTRL_nDIOW_PIN  (6)  // This is a virtual pin, mapped to AREF ;-)
 #define CTRL_nDIOR_PIN  (5)
 
-//#define UART_ENABLE
-
-void io_8255_set_direction(bool read_or_write)
+static inline void io_8255_set_direction(bool read_or_write)
 {
-
-    /* Disable UART */
-    //Serial.flush();
-    //UCSR0B &= ~(1 << RXEN0);
-    //UCSR0B &= ~(1 << TXEN0);
-    //_delay_us(100);
-
     if (read_or_write == true)
     {
         // Initialize D0-D7 as inputs
@@ -217,7 +191,7 @@ void io_8255_set_direction(bool read_or_write)
     }
 }
 
-void ide_ctrl_port(uint8_t val)
+static inline void ide_ctrl_port(uint8_t val)
 {
     /* Write the value to the port (only 6 bits) */
     CTRL_PORT = val & 0x3FU;
@@ -242,57 +216,8 @@ void ide_ctrl_init()
     highZ();
 }
 
-// End of 82C55 routines
-
-void setup(){
-
-  // LCD Part
-  // ########
-//  lcd.begin ();                                // init LCD interface
-  // Switch on the backlight
-  //lcd.setBacklightPin(BACKLIGHT_PIN,POSITIVE);
-//  lcd.setBacklight(HIGH);
-//  lcd.home ();                                     // set cursor to home position
-
-
-  
-  // Arduino Part
-  // #############
-
-  //Serial.begin(57600);
-
-  // Initialize the IDE control port
-  ide_ctrl_init();
-
-  _delay_ms(100);
-
-    pt6311_setup();
-
-//  while(1)
-//  {
-//      ide_ctrl_port(1 << 6);
-//    _delay_ms(3000);
-//          ide_ctrl_port(0);
-//    _delay_ms(3000);
-//  }
-
-  //diagnosticTest();
-
-  // initialize the push button pins as inputs with pullup:
-//  pinMode(NEXT, INPUT);
-//  pinMode(PREV, INPUT);
-//  pinMode(EJCT, INPUT);
-//  pinMode(STOP, INPUT);
-//  pinMode(PLAY, INPUT);
-//  pinMode(LED, OUTPUT);
-//
-//  digitalWrite((byte)NEXT, HIGH);
-//  digitalWrite((byte)PREV, HIGH);
-//  digitalWrite((byte)EJCT, HIGH);
-//  digitalWrite((byte)STOP, HIGH);
-//  digitalWrite((byte)PLAY, HIGH);
-//  digitalWrite((byte)LED, LOW);
-
+void ide_initialization()
+{
 // IDE Initialisation Part
 // ########################
 
@@ -316,8 +241,8 @@ void setup(){
   readIDE(CylHReg);
   code2 = dataLval;
 
-  dbg_display_number_and_wait_btn(code1);
-  dbg_display_number_and_wait_btn(code2);
+  //dbg_display_number_and_wait_btn(code1);
+  //dbg_display_number_and_wait_btn(code2);
 
   if ((code1 == 0x14) && (code2 == 0xEB))
   {
@@ -343,12 +268,11 @@ void setup(){
   //lcd.clear ();
  // Serial.println("Self Diag. ");
       readIDE(ErrFReg);
-      dbg_display_number_and_wait_btn(dataLval);
+      //dbg_display_number_and_wait_btn(dataLval);
  //   Serial.println(dataLval, HEX);
 
   writeIDE(ComSReg, 0x90, 0xFF);            // Issue Run Self Diagnostic Command
   readIDE(ErrFReg);
-  dbg_display_number_and_wait_btn(dataLval);
   if(dataLval == 0x01){
 //    Serial.println("OK");
   }else{
@@ -363,6 +287,7 @@ void setup(){
   writeIDE (ComSReg, 0xA1, 0xFF);           // Issue Identify Device Command
   _delay_ms(500);                               // Instead of wait for IRQ. Needed by some dev.
 //  readIDE(AStCReg); //
+
   do{
     readIDE(DataReg);
     if (cnt == 0){                                // Get supported packet lenght
@@ -377,6 +302,7 @@ void setup(){
     cnt++;
     readIDE(ComSReg);                             // Read Status Register and check DRQ,
   } while(dataLval & (1<<3));                     // skip rest of data until DRQ=0
+
   readIDE(AStCReg);
   DRQ_clear_wait();
 
@@ -420,7 +346,10 @@ void loop(void) {
   /* this logic shall always be run periodically */
   keypad_periodic(timeout(10, SOFT_TIMER_0));
 
-  display_number(milliseconds_since_boot);
+  display_set_cursor(0,0);
+  display_clear();
+  display_write_number(*(uint16_t*)btnbuf, 0);
+  display_periodic();
 
   // Scan push buttons
   if(keypad_clicked(BUTTON_EJECT) == KEY_CLICK)
@@ -498,7 +427,7 @@ void loop(void) {
     //lcd.clear();
   }
   
-  if(millis()-prev_millis > interval){          // This part will periodically check the
+  if(timeout(250, SOFT_TIMER_1)){          // This part will periodically check the
     read_subch_cmd();                           // current audio status and update the display
     if(aud_stat==0x11){                         // accordingly.
       //lcd.home();
@@ -519,7 +448,6 @@ void loop(void) {
       //lcd.clear();                              // states not decoded by this sketch and
       /*Serial.println("    NO DISC");*/                 // handles them as NO DISC.
     }
-    prev_millis=millis();
   }
 }
 
@@ -590,19 +518,13 @@ void stop_disk(void){
 }
 
 // Set to high impedance all ports of PCF8475 interfacing to IDE.
-void highZ(void){
+static inline void highZ(void){
     /* All outputs high: deassert IDE bus */
     ide_ctrl_port(0xFFU);
     /* All data ports as input */
     io_8255_set_direction(true);
-#ifdef UART_ENABLE
-    /* Enable UART */
-    UCSR0B |= (1 << RXEN0);
-    UCSR0B |= (1 << TXEN0);
-#endif
-
     /* high-z for IDE means we can re-start display operation */
-    pt6311_init();
+    pt6311_setup_io();
 }
 
 // Reset Device
@@ -619,7 +541,7 @@ void reset_IDE(void){
 0: asserted
 1: negated
 ----------------------------------------------------------------------
-  1     1    x  x  x   xxx    Data Bus High impedance with nDIOR asserted (low)
+  1     1    x  x  x   N/A    Data Bus High impedance with nDIOR asserted (low)
   0     1    0  0  0   1F0    Data Register       Data Register
   0     1    0  0  1   1F1    Error Register      (Write Precomp Reg.)
   0     1    0  1  0   1F2    Sector Count        Sector Count
@@ -879,19 +801,6 @@ void init_task_file(void){
 // END ####################################################################################
 
 
-// Start PT6311 Display
-
-
-// INCLUDE FILE
-
-
-
-
-// SOURCE FILE
-
-
-
-
 /*
 In the final project the STB pin will be always "HIGH" if the IDE port is accessed.
 Then, when not accessed, the STB pin will follow the STB output from the microcontroller.
@@ -913,11 +822,109 @@ uint8_t seven_segment_mapping[] =
 0xfe ,
 0xbe
 };
+/*
+ * 0 - some labels
+ * 1 - 1st digit
+ * 2 - nothing
+ * 3 - 3rd digit
+ * 4 - 2nd digit
+ * 5 - nothing
+ * 6 - 5th digit
+ * 7 - 4th digit
+ * 8 - nothing
+ * 9 - 7th
+ * 10 - 6th
+ * 11 - nothing
+ * 12 - 9th
+ * 13 - 8th
+ * 14 - nothing
+ * 15 - disk image
+ * 16 - labels like play pause cd ..
+ * 17 - l/r
+ *
+ *
+ * */
+uint8_t display_buffer[64] = { 0 };
+
+void pt6311_update(void)
+{
+    /* Write the buffer in chunks of 48 bytes: the maximum
+     * chunk in a single transfer that is accepted by the controller.
+     */
+    for (uint8_t i = 0; i < 64; i+=6)
+    {
+        pt6311_write(0x40,      NULL, 0);                /* COMMAND 2: DATA SETTING COMMANDS */
+        pt6311_write(0xC0 + i,  &display_buffer[i], 6U);     /* COMMAND 3: ADDRESS SETTING COMMANDS */
+    }
+    pt6311_write(0x40, NULL, 0);                /* COMMAND 2: DATA SETTING COMMANDS */
+    pt6311_write(0xC0 + 60,   &display_buffer[60], 4U);     /* COMMAND 3: ADDRESS SETTING COMMANDS */
+}
+#include <string.h>
+void dbg_display_char(const char* str, uint8_t len)
+{
+    uint32_t bf = 0;
+
+    if (len > 9) {
+        len = 9;
+    }
+//
+//    display_buffer[1] = SevenSegmentASCII[str[0] - 32];
+//    display_buffer[4] = SevenSegmentASCII[str[1] - 32];
+//    display_buffer[3] = SevenSegmentASCII[str[2] - 32];
+//    display_buffer[7] = SevenSegmentASCII[str[3] - 32];
+//    display_buffer[6] = SevenSegmentASCII[str[4] - 32];
+//    display_buffer[10] = SevenSegmentASCII[str[5] - 32];
+//    display_buffer[9] = SevenSegmentASCII[str[6] - 32];
+//    display_buffer[13] = SevenSegmentASCII[str[7] - 32];
+//    display_buffer[12] = SevenSegmentASCII[str[8] - 32];
+    //pt6311_update();
+
+    display_clear();
+    display_set_cursor(0,0);
+    display_write_string(str);
+    display_periodic();
+
+//    while(1)
+//    {
+//        memset(display_buffer, 0, 64);
+//        display_buffer[u] = SevenSegmentASCII['8' - 32];
+//        pt6311_update();
+//        do
+//        {
+//          pt6311_read(0x46, (uint8_t*)&bf, 3);
+//        } while(bf == 0);
+//        // wait release
+//        do
+//        {
+//          pt6311_read(0x46, (uint8_t*)&bf, 3);
+//        } while(bf != 0);
+//
+//        u+=1;
+//
+//
+//        if (u > 63) u=0;
+//    }
+
+
+    do
+    {
+      pt6311_read(0x46, (uint8_t*)&bf, 3);
+    } while(bf == 0);
+    // wait release
+    do
+    {
+      pt6311_read(0x46, (uint8_t*)&bf, 3);
+    } while(bf != 0);
+}
 
 void dbg_display_number_and_wait_btn(uint32_t number)
 {
   uint32_t bf = 0;
-  display_number(number);
+  //display_number(number);
+
+  //snprintf(buf, 16, "%ld", number);
+  dbg_display_char("Lorenzo", 9);
+
   // wait press
   do
   {
@@ -966,8 +973,16 @@ int main(void)
     TCCR0B = _BV(CS00) | _BV(CS01);     /* 64x prescaler */
     TIMSK0 = _BV(OCIE0A);               /* enable interrupt routine */
 
+    // Initialize the IDE control port
+    ide_ctrl_init();
+    _delay_ms(100);
+
+    /* Initialize the display library */
+    display_init();
+
+
     /* Call the "Arduino" setup() */
-    setup();
+    ide_initialization();
 
     /* Init done, enable interrupts and start dancing */
     sei();
